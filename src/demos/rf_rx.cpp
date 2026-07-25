@@ -285,15 +285,34 @@ static void fadeStep() {
   ring.show();
 }
 
+static const __FlashStringHelper* modeName(Mode m) {
+  if (m == MODE_LOCK) return F("LOCK");
+  if (m == MODE_UNLOCK) return F("UNLOCK");
+  if (m == MODE_COMBO) return F("BOTH");
+  return F("IDLE");
+}
+
 static void beginHold(Mode m) {
+  const bool wasHolding = holding;
+  const Mode prev = displayMode;
   holding = true;
   displayMode = m;
   heldMode = m;
   releaseMs = 0;
+  if (!wasHolding) {
+    Serial.print(F("HOLD "));
+    Serial.println(modeName(m));
+  } else if (prev != m) {
+    Serial.print(F("HOLD switch -> "));
+    Serial.println(modeName(m));
+  }
 }
 
 static void beginRelease(uint32_t now) {
   if (!holding) return;
+  Serial.print(F("RELEASE "));
+  Serial.print(modeName(heldMode));
+  Serial.println(F(" (solid HIGH)"));
   holding = false;
   releaseMs = now;
   // targets will dim via grace, then idle — all faded
@@ -367,10 +386,12 @@ void demoRfRxSetup() {
   lightsOn = true;
   animClock = 0;
 
+  LOG("=== TEST LOG SESSION ===");
   LOG("RF + LED show (fade + solid-HIGH release)");
   LOG("  Dout->D3  ring->D4");
   LOG("  3x LOCK=OFF  3x UNLOCK=ON");
   LOG("  release = long HIGH block, then fade");
+  LOG("Ready — do the checklist steps.");
 }
 
 void demoRfRxLoop() {
@@ -420,6 +441,10 @@ void demoRfRxLoop() {
       if (btn != MODE_IDLE && stableCount >= kStableFrames) {
         const bool wasHolding = holding;
         if (!wasHolding) {
+          Serial.print(F("CODE 0x"));
+          Serial.print(code, HEX);
+          Serial.print(F(" "));
+          Serial.println(modeName(btn));
           onDistinctTap(btn, now);
         }
         beginHold(btn);
