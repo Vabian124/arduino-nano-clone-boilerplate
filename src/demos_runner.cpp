@@ -31,10 +31,10 @@ void demosPrintWiring() {
   LOG("  SPI_LOOPBACK jumper D11(MOSI) <-> D12(MISO)");
 #endif
 #if DEMO_LED_RING
-  LOG("  LED_RING     WCMCU-2812B-24: 5V IN + GND, DIN -> D2 (DOUT unused)");
+  LOG("  LED_RING     WCMCU-2812B-24: 5V IN + GND, DIN -> D3 (DOUT unused)");
 #endif
 #if DEMO_RF_RX
-  LOG("  RF_RX+LIGHT  remote Dout->D3, LED ring DIN->D4, 5V+GND");
+  LOG("  RF_RX+LIGHT  remote Dout->D2, LED ring DIN->D3, 5V+GND");
 #endif
 }
 

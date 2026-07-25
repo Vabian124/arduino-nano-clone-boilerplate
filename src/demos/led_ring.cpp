@@ -14,7 +14,7 @@
  *
  * Wiring (USB power OK at low brightness):
  *   Ring 5V IN → Nano 5V
- *   Ring DIN   → Nano D2  (Pins::LED_RING)
+ *   Ring DIN   → Nano D3  (Pins::LED_RING)
  *   Ring GND   → Nano GND
  *   Ring DOUT  → leave open (or to next ring's DIN if daisy-chaining)
  *
@@ -95,7 +95,7 @@ void demoLedRingSetup() {
   phase = PHASE_PIXEL_WALK;
   step = 0;
   phaseStarted = millis();
-  LOG("demo LED_RING ready (WCMCU-2812B-24 on D2)");
+  LOG("demo LED_RING ready (WCMCU-2812B-24 on D3)");
   LOGV("  LED count=", LED_RING_COUNT);
   LOGV("  dim brightness=", LED_RING_BRIGHTNESS);
   LOGV("  few-LED brightness=", LED_RING_BRIGHTNESS_FULL);

@@ -8,8 +8,8 @@
 #include "tools.h"
 
 /*
- * Remote MCU Pin7 (PA4 Dout) → Nano D3
- * LED ring DIN                 → Nano D4
+ * Remote MCU Pin7 (PA4 Dout) → Nano D2
+ * LED ring DIN                 → Nano D3
  *
  * While held: PT2262 frames (~350/1100 us) separated by ~11 ms sync lows.
  * On release: a solid HIGH block (~12 ms in PulseView; data highs are only
@@ -36,12 +36,9 @@ static constexpr uint32_t kLockGestureWindowMs = 4000;
 static constexpr uint32_t kUnlockGestureWindowMs = 3500;
 
 // Hold / release timing
-// Frames can glitch for ~200–300 ms while still held; don't drop hold that fast.
-static constexpr uint32_t kReleaseMs = 450;
+static constexpr uint32_t kReleaseMs = 140;      // past inter-frame sync ⇒ released
 static constexpr uint32_t kRepressGraceMs = 850; // repress soon ⇒ keep effect, fade gently
 static constexpr uint8_t kStableFrames = 2;      // ignore 1-off glitches while held
-// Solid HIGH alone is not enough — also need frames to have stopped.
-static constexpr uint32_t kHighReleaseQuietMs = 40;
 
 static Adafruit_NeoPixel ring(LED_RING_COUNT, Pins::LED_RING, NEO_GRB + NEO_KHZ800);
 
@@ -311,21 +308,13 @@ static void beginHold(Mode m) {
   }
 }
 
-static void beginRelease(uint32_t now, const __FlashStringHelper* why) {
+static void beginRelease(uint32_t now) {
   if (!holding) return;
   Serial.print(F("RELEASE "));
   Serial.print(modeName(heldMode));
-  Serial.print(F(" "));
-  Serial.println(why);
+  Serial.println(F(" (solid HIGH)"));
   holding = false;
   releaseMs = now;
-  // targets will dim via grace, then idle — all faded
-}
-
-static bool isContinueOfHold(Mode btn, uint32_t now) {
-  if (holding && heldMode == btn) return true;
-  if (releaseMs && heldMode == btn && (now - releaseMs) < kRepressGraceMs) return true;
-  return false;
 }
 
 static void onDistinctTap(Mode btn, uint32_t now) {
@@ -398,7 +387,7 @@ void demoRfRxSetup() {
 
   LOG("=== TEST LOG SESSION ===");
   LOG("RF + LED show (fade + solid-HIGH release)");
-  LOG("  Dout->D3  ring->D4");
+  LOG("  Dout->D2  ring->D3");
   LOG("  3x LOCK=OFF  3x UNLOCK=ON");
   LOG("  release = long HIGH block, then fade");
   LOG("Ready — do the checklist steps.");
@@ -424,10 +413,7 @@ void demoRfRxLoop() {
       noInterrupts();
       releaseSeen = 0;
       interrupts();
-      // Only honor HIGH release after frames have gone quiet (avoids mid-burst FPs)
-      if (holding && lastFrameMs && (now - lastFrameMs) >= kHighReleaseQuietMs) {
-        beginRelease(now, F("(solid HIGH)"));
-      }
+      beginRelease(now);
     }
   }
 
@@ -439,17 +425,10 @@ void demoRfRxLoop() {
     readyCount = 0;
     interrupts();
 
-      uint32_t code = 0;
+    uint32_t code = 0;
     if (localN >= 40 && decodePt2262(local, localN, code)) {
       const Mode btn = modeFromCode(code);
 
-      // Keep hold alive on any matching frame (even glitchy singles)
-      if (btn != MODE_IDLE && holding && btn == heldMode) {
-        lastFrameMs = now;
-        releaseMs = 0;
-      }
-
-      // Stable filtering while held — kills glitch mode flips / flashes
       if (btn == candidate) {
         if (stableCount < 255) stableCount++;
       } else {
@@ -458,8 +437,8 @@ void demoRfRxLoop() {
       }
 
       if (btn != MODE_IDLE && stableCount >= kStableFrames) {
-        const bool continued = isContinueOfHold(btn, now);
-        if (!continued) {
+        const bool wasHolding = holding;
+        if (!wasHolding) {
           Serial.print(F("CODE 0x"));
           Serial.print(code, HEX);
           Serial.print(F(" "));
@@ -474,7 +453,7 @@ void demoRfRxLoop() {
   }
 
   // Stuck HIGH release block (no falling edge yet) — poll while holding
-  if (holding && lastFrameMs && (now - lastFrameMs) >= kHighReleaseQuietMs) {
+  if (holding) {
     noInterrupts();
     const uint8_t lvl = prevLevel;
     const uint32_t since = (uint32_t)(micros() - lastUs);
@@ -486,7 +465,7 @@ void demoRfRxLoop() {
 
   // Backup: no frames for a while (after HIGH block ends / line goes idle)
   if (holding && lastFrameMs && (now - lastFrameMs) > kReleaseMs) {
-    beginRelease(now, F("(timeout)"));
+    beginRelease(now);
   }
 
   // After grace, fully idle targets

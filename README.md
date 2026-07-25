@@ -74,8 +74,8 @@ platformio.ini      # nano_new (default) + nano_old
 | `DEMO_PULSE_IN` | `pulseIn` width | Jumper **D4 → D7** |
 | `DEMO_I2C_SCAN` | I2C bus scan | Devices on **A4/A5** (+ pull-ups) |
 | `DEMO_SPI_LOOPBACK` | SPI transfer check | Jumper **D11 ↔ D12** |
-| `DEMO_LED_RING` | Standalone WS2812B ring test | **5V / DIN→D4 / GND** |
-| `DEMO_RF_RX` | PT2262 remote → LED light show (default on) | Dout→**D3**, ring DIN→**D4** |
+| `DEMO_LED_RING` | Standalone WS2812B ring test | **5V / DIN→D3 / GND** |
+| `DEMO_RF_RX` | PT2262 remote → LED light show (default on) | Dout→**D2**, ring DIN→**D3** |
 
 ### RF remote + LED ring
 
@@ -83,8 +83,8 @@ Decodes the 2-button PT2262 fob (`0xA45352` / `0xA45354` / `0xA45356`) and runs 
 
 | Signal | Nano |
 |--------|------|
-| Remote MCU Pin7 (PA4 Dout) | **D3** |
-| LED ring DIN | **D4** |
+| Remote MCU Pin7 (PA4 Dout) | **D2** |
+| LED ring DIN | **D3** |
 | 5V / GND | 5V / GND |
 
 Boot prints which demos are on and how to wire them.

@@ -20,7 +20,7 @@
 #define DEMO_I2C_SCAN      0  // Wire scan on A4/A5 (needs pull-ups / devices)
 #define DEMO_SPI_LOOPBACK  0  // jumper MOSI(D11)↔MISO(D12)
 #define DEMO_LED_RING      0  // standalone ring demo (off — RF demo owns the ring)
-#define DEMO_RF_RX         1  // PT2262 on D3 + light show on D4
+#define DEMO_RF_RX         1  // PT2262 on D2 + light show on D3
 
 // Ring (driven by RF demo)
 #define LED_RING_COUNT      24
