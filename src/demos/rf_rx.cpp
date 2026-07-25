@@ -25,9 +25,11 @@ static constexpr uint8_t kMax = 120;
 static constexpr unsigned int kGapUs = 5000;           // frame sync LOW (~11 ms)
 static constexpr unsigned int kSolidHighReleaseUs = 10000;  // release marker HIGH
 
-static constexpr uint32_t kCodeLock = 0xA45352UL;
-static constexpr uint32_t kCodeUnlock = 0xA45354UL;
-static constexpr uint32_t kCodeCombo = 0xA45356UL;
+static constexpr uint32_t kCodeLock = 0xA45352UL;    // key 0x2
+static constexpr uint32_t kCodeUnlock = 0xA45354UL;  // key 0x4
+static constexpr uint32_t kCodeCombo = 0xA45356UL;   // key 0x6 (lock+unlock)
+static constexpr uint32_t kCodeBtn1 = 0xA45351UL;    // key 0x1 (new)
+static constexpr uint32_t kCodeBtn8 = 0xA45358UL;    // key 0x8 (new)
 
 static constexpr uint8_t kLockOffCount = 3;
 static constexpr uint8_t kUnlockOnCount = 3;
@@ -48,7 +50,15 @@ static volatile uint8_t prevLevel = 0;
 static unsigned int local[kMax];
 static uint8_t localN = 0;
 
-enum Mode : uint8_t { MODE_IDLE = 0, MODE_LOCK, MODE_UNLOCK, MODE_COMBO };
+enum Mode : uint8_t {
+  MODE_IDLE = 0,
+  MODE_LOCK,
+  MODE_UNLOCK,
+  MODE_COMBO,
+  MODE_BTN1,
+  MODE_BTN8,
+  MODE_BTN18  // both new buttons (key 0x9 = 0x1|0x8)
+};
 
 static Mode mode = MODE_IDLE;
 static bool holding = false;
@@ -131,17 +141,41 @@ static bool decodePt2262(const unsigned int* w, uint8_t n, uint32_t& codeOut) {
 
 static Mode modeFromCode(uint32_t code) {
   const uint8_t key = (uint8_t)(code & 0x0FUL);
+  // Same address family 0xA4535x — data nibble selects the key(s)
   if (code == kCodeLock || key == 0x2) return MODE_LOCK;
   if (code == kCodeUnlock || key == 0x4) return MODE_UNLOCK;
   if (code == kCodeCombo || key == 0x6) return MODE_COMBO;
-  return MODE_IDLE;
+  if (code == kCodeBtn1 || key == 0x1) return MODE_BTN1;
+  if (code == kCodeBtn8 || key == 0x8) return MODE_BTN8;
+  if (key == 0x9) return MODE_BTN18;  // 0x1|0x8
+  return MODE_IDLE;  // still logged as NEW if seen
 }
 
 static const __FlashStringHelper* modeName(Mode m) {
   if (m == MODE_LOCK) return F("LOCK");
   if (m == MODE_UNLOCK) return F("UNLOCK");
   if (m == MODE_COMBO) return F("BOTH");
+  if (m == MODE_BTN1) return F("BTN1");
+  if (m == MODE_BTN8) return F("BTN8");
+  if (m == MODE_BTN18) return F("BTN1+8");
   return F("IDLE");
+}
+
+static uint32_t lastSeeCode = 0;
+static uint32_t lastSeeMs = 0;
+
+static void logSee(uint32_t code, Mode btn, uint32_t now) {
+  // Dedup spam while held — print when code changes or every 400 ms
+  if (code == lastSeeCode && (now - lastSeeMs) < 400) return;
+  lastSeeCode = code;
+  lastSeeMs = now;
+  Serial.print(F("SEE 0x"));
+  Serial.print(code, HEX);
+  Serial.print(F(" key=0x"));
+  Serial.print((uint8_t)(code & 0x0FUL), HEX);
+  Serial.print(F(" "));
+  if (btn == MODE_IDLE) Serial.println(F("** NEW **"));
+  else Serial.println(modeName(btn));
 }
 
 static uint8_t stepToward(uint8_t cur, uint8_t tgt, uint8_t step) {
@@ -224,6 +258,42 @@ static void paintCombo() {
   animPhase += 5;
 }
 
+// New button key 0x1 — lime pulse around the ring
+static void paintBtn1() {
+  tgtBright = LED_RING_BRIGHTNESS;
+  clearTargets();
+  const uint8_t head = (uint8_t)((animClock / 28) % LED_RING_COUNT);
+  for (uint8_t t = 0; t < 8; t++) {
+    const uint8_t i = (head + t) % LED_RING_COUNT;
+    const uint8_t v = (uint8_t)(255 - t * 28);
+    setTargetPixel(i, v / 6, v, v / 8);
+  }
+}
+
+// New button key 0x8 — magenta / rose chase
+static void paintBtn8() {
+  tgtBright = LED_RING_BRIGHTNESS;
+  clearTargets();
+  const uint8_t head = (uint8_t)((animClock / 26) % LED_RING_COUNT);
+  for (uint8_t t = 0; t < 8; t++) {
+    const uint8_t i = (head + LED_RING_COUNT - t) % LED_RING_COUNT;
+    const uint8_t v = (uint8_t)(255 - t * 28);
+    setTargetPixel(i, v, v / 10, v / 2);
+  }
+}
+
+// Both new buttons — split lime + magenta
+static void paintBtn18() {
+  tgtBright = LED_RING_BRIGHTNESS;
+  const uint8_t a = (uint8_t)((animClock / 30) % LED_RING_COUNT);
+  const uint8_t b = (uint8_t)((a + LED_RING_COUNT / 2) % LED_RING_COUNT);
+  clearTargets();
+  for (uint8_t t = 0; t < 6; t++) {
+    setTargetPixel((a + t) % LED_RING_COUNT, 40, (uint8_t)(220 - t * 30), 20);
+    setTargetPixel((b + t) % LED_RING_COUNT, (uint8_t)(220 - t * 30), 20, 100);
+  }
+}
+
 static void paintOff() {
   tgtBright = 0;
   clearTargets();
@@ -253,11 +323,17 @@ static void updateTargets() {
     if (mode == MODE_LOCK) paintLock();
     else if (mode == MODE_UNLOCK) paintUnlock();
     else if (mode == MODE_COMBO) paintCombo();
+    else if (mode == MODE_BTN1) paintBtn1();
+    else if (mode == MODE_BTN8) paintBtn8();
+    else if (mode == MODE_BTN18) paintBtn18();
     else paintIdle();
   } else if (releaseMs && (millis() - releaseMs) < kFadeOutMs && mode != MODE_IDLE) {
     if (mode == MODE_LOCK) paintLock();
     else if (mode == MODE_UNLOCK) paintUnlock();
     else if (mode == MODE_COMBO) paintCombo();
+    else if (mode == MODE_BTN1) paintBtn1();
+    else if (mode == MODE_BTN8) paintBtn8();
+    else if (mode == MODE_BTN18) paintBtn18();
     tgtBright = (uint8_t)((uint16_t)tgtBright * (kFadeOutMs - (millis() - releaseMs)) / kFadeOutMs);
   } else {
     if (releaseMs) {
@@ -347,9 +423,10 @@ void demoRfRxSetup() {
   lightsOn = true;
   animClock = 0;
 
-  LOG("RF raw: short HIGH + hex…hex → long HIGH = release");
+  LOG("RF: short HIGH + hex… → long HIGH = release");
   LOG("  Dout->D2  ring->D3");
-  LOG("  3x LOCK=OFF  3x UNLOCK=ON");
+  LOG("  …2 LOCK  …4 UNLOCK  …6 BOTH");
+  LOG("  …1 BTN1  …8 BTN8  …9 BTN1+8");
 }
 
 void demoRfRxLoop() {
@@ -404,12 +481,9 @@ void demoRfRxLoop() {
     uint32_t code = 0;
     if (localN >= 40 && decodePt2262(local, localN, code)) {
       const Mode btn = modeFromCode(code);
+      logSee(code, btn, now);
       if (btn != MODE_IDLE) {
         if (!holding) {
-          Serial.print(F("CODE 0x"));
-          Serial.print(code, HEX);
-          Serial.print(F(" "));
-          Serial.println(modeName(btn));
           onDistinctTap(btn, now);
           Serial.print(F("HOLD "));
           Serial.println(modeName(btn));

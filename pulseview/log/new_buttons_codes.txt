@@ -1,0 +1,10 @@
+Learned from continual presses (pulseview/log/new_buttons.txt):
+
+  0xA45351  key 0x1  BTN1  (new)
+  0xA45358  key 0x8  BTN8  (new)
+  0xA45359  key 0x9  BTN1+8 (both new together)
+
+Already known:
+  0xA45352  key 0x2  LOCK
+  0xA45354  key 0x4  UNLOCK
+  0xA45356  key 0x6  BOTH (lock+unlock)
