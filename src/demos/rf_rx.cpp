@@ -247,15 +247,6 @@ static uint8_t quarterStartForKey(uint8_t bit) {
   return kQGreen;
 }
 
-static void paintQuarter(uint8_t start, uint8_t r, uint8_t g, uint8_t b, uint8_t level) {
-  for (uint8_t i = 0; i < kQLen; i++) {
-    setTargetPixel((uint8_t)(start + i),
-                   (uint8_t)((uint16_t)r * level / 255),
-                   (uint8_t)((uint16_t)g * level / 255),
-                   (uint8_t)((uint16_t)b * level / 255));
-  }
-}
-
 static void paintQuarterPulse(uint8_t start, uint8_t r, uint8_t g, uint8_t b) {
   const uint16_t t = (uint16_t)(animClock % 1000);
   const uint8_t breath = (t < 500) ? (uint8_t)(150 + t / 5) : (uint8_t)(150 + (1000 - t) / 5);
