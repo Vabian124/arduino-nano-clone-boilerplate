@@ -11,20 +11,19 @@
  * Remote MCU Pin7 (PA4 Dout) → Nano D2
  * LED ring DIN                 → Nano D3
  *
- * While held: PT2262 frames (~350/1100 us) separated by ~11 ms sync lows.
- * On release: a solid HIGH block (~12 ms in PulseView; data highs are only
- * ~1.1 ms) — detect that HIGH stretch, then fade out.
+ * Key shape (raw):
+ *   short HIGH → hex frame → hex → hex … (while held)
+ *   then, after release, a long solid HIGH
  *
- * Gestures (distinct taps, short window):
- *   LOCK   ×3 → lights OFF
- *   UNLOCK ×3 → lights ON
+ * Sync between frames is a long LOW (~11 ms) — not a release.
+ * Only the long solid HIGH ends a hold.
+ *
+ * Gestures: LOCK ×3 → lights OFF, UNLOCK ×3 → lights ON
  */
 
 static constexpr uint8_t kMax = 120;
-static constexpr unsigned int kGapUs = 5000;
-// Solid HIGH release marker (PulseView ~12 ms). Normal data HIGH ≤ ~1.1 ms.
-// Inter-frame sync is a long LOW (~11 ms) — must NOT count as release.
-static constexpr unsigned int kSolidHighReleaseUs = 8000;
+static constexpr unsigned int kGapUs = 5000;           // frame sync LOW (~11 ms)
+static constexpr unsigned int kSolidHighReleaseUs = 10000;  // release marker HIGH
 
 static constexpr uint32_t kCodeLock = 0xA45352UL;
 static constexpr uint32_t kCodeUnlock = 0xA45354UL;
@@ -32,13 +31,8 @@ static constexpr uint32_t kCodeCombo = 0xA45356UL;
 
 static constexpr uint8_t kLockOffCount = 3;
 static constexpr uint8_t kUnlockOnCount = 3;
-static constexpr uint32_t kLockGestureWindowMs = 4000;
-static constexpr uint32_t kUnlockGestureWindowMs = 3500;
-
-// Hold / release timing
-static constexpr uint32_t kReleaseMs = 140;      // past inter-frame sync ⇒ released
-static constexpr uint32_t kRepressGraceMs = 850; // repress soon ⇒ keep effect, fade gently
-static constexpr uint8_t kStableFrames = 2;      // ignore 1-off glitches while held
+static constexpr uint32_t kGestureWindowMs = 4000;
+static constexpr uint32_t kFadeOutMs = 500;
 
 static Adafruit_NeoPixel ring(LED_RING_COUNT, Pins::LED_RING, NEO_GRB + NEO_KHZ800);
 
@@ -56,22 +50,16 @@ static uint8_t localN = 0;
 
 enum Mode : uint8_t { MODE_IDLE = 0, MODE_LOCK, MODE_UNLOCK, MODE_COMBO };
 
-static Mode displayMode = MODE_IDLE;   // what we fade toward
-static Mode heldMode = MODE_IDLE;      // last solid hold mode
-static Mode candidate = MODE_IDLE;
-static uint8_t stableCount = 0;
-
-static uint32_t lastFrameMs = 0;
-static uint32_t releaseMs = 0;
+static Mode mode = MODE_IDLE;
 static bool holding = false;
 static bool lightsOn = true;
+static uint32_t releaseMs = 0;
 
 static uint8_t lockStreak = 0;
 static uint8_t unlockStreak = 0;
 static uint32_t lockStreakStartMs = 0;
 static uint32_t unlockStreakStartMs = 0;
 
-// Per-pixel fade buffers
 static uint8_t curR[LED_RING_COUNT];
 static uint8_t curG[LED_RING_COUNT];
 static uint8_t curB[LED_RING_COUNT];
@@ -98,8 +86,8 @@ static void rfIsr() {
   const unsigned int d = (unsigned int)(now - lastUs);
   lastUs = now;
 
-  // Duration that just ended was at prevLevel.
-  // Solid HIGH block (FFF-style) = button release for lock & unlock.
+  // Ended level was prevLevel.
+  // Long solid HIGH → release. Long LOW → frame gap (arm hex).
   if (prevLevel == 1 && d >= kSolidHighReleaseUs) {
     releaseSeen = 1;
     if (count >= 8) arm();
@@ -142,10 +130,18 @@ static bool decodePt2262(const unsigned int* w, uint8_t n, uint32_t& codeOut) {
 }
 
 static Mode modeFromCode(uint32_t code) {
-  if (code == kCodeLock || (code & 0x0FUL) == 0x2) return MODE_LOCK;
-  if (code == kCodeUnlock || (code & 0x0FUL) == 0x4) return MODE_UNLOCK;
-  if (code == kCodeCombo || (code & 0x0FUL) == 0x6) return MODE_COMBO;
+  const uint8_t key = (uint8_t)(code & 0x0FUL);
+  if (code == kCodeLock || key == 0x2) return MODE_LOCK;
+  if (code == kCodeUnlock || key == 0x4) return MODE_UNLOCK;
+  if (code == kCodeCombo || key == 0x6) return MODE_COMBO;
   return MODE_IDLE;
+}
+
+static const __FlashStringHelper* modeName(Mode m) {
+  if (m == MODE_LOCK) return F("LOCK");
+  if (m == MODE_UNLOCK) return F("UNLOCK");
+  if (m == MODE_COMBO) return F("BOTH");
+  return F("IDLE");
 }
 
 static uint8_t stepToward(uint8_t cur, uint8_t tgt, uint8_t step) {
@@ -153,16 +149,12 @@ static uint8_t stepToward(uint8_t cur, uint8_t tgt, uint8_t step) {
     uint16_t n = (uint16_t)cur + step;
     return (n > tgt) ? tgt : (uint8_t)n;
   }
-  if (cur > tgt) {
-    return (cur - tgt < step) ? tgt : (uint8_t)(cur - step);
-  }
+  if (cur > tgt) return (cur - tgt < step) ? tgt : (uint8_t)(cur - step);
   return cur;
 }
 
 static void clearTargets() {
-  for (uint8_t i = 0; i < LED_RING_COUNT; i++) {
-    tgtR[i] = tgtG[i] = tgtB[i] = 0;
-  }
+  for (uint8_t i = 0; i < LED_RING_COUNT; i++) tgtR[i] = tgtG[i] = tgtB[i] = 0;
 }
 
 static void setTargetPixel(uint8_t i, uint8_t r, uint8_t g, uint8_t b) {
@@ -201,7 +193,7 @@ static void paintLock() {
   for (uint8_t t = 0; t < 9; t++) {
     const uint8_t i = (head + LED_RING_COUNT - t) % LED_RING_COUNT;
     const uint8_t v = (uint8_t)(255 - t * 26);
-    if (t == 0) setTargetPixel(i, 120, 210, 255);       // soft ice, not white
+    if (t == 0) setTargetPixel(i, 120, 210, 255);
     else if (t < 3) setTargetPixel(i, v / 5, v, 255);
     else setTargetPixel(i, 0, v / 5, v / 2);
   }
@@ -218,7 +210,7 @@ static void paintUnlock() {
     heat = (uint8_t)((heat * (190 + ((animClock / 19 + i * 41) & 65))) / 255);
     setTargetPixel(i, heat, (uint8_t)(heat / 5), 0);
   }
-  setTargetPixel(head, 255, 160, 40);  // warm tip, not white
+  setTargetPixel(head, 255, 160, 40);
 }
 
 static void paintCombo() {
@@ -257,23 +249,26 @@ static void updateTargets() {
     paintOff();
     return;
   }
-  if (holding || (releaseMs && (millis() - releaseMs) < kRepressGraceMs && heldMode != MODE_IDLE)) {
-    Mode m = holding ? displayMode : heldMode;
-    if (m == MODE_LOCK) paintLock();
-    else if (m == MODE_UNLOCK) paintUnlock();
-    else if (m == MODE_COMBO) paintCombo();
+  if (holding) {
+    if (mode == MODE_LOCK) paintLock();
+    else if (mode == MODE_UNLOCK) paintUnlock();
+    else if (mode == MODE_COMBO) paintCombo();
     else paintIdle();
-    if (!holding) {
-      // Fade down during post-release grace
-      tgtBright = (uint8_t)((uint16_t)tgtBright * (kRepressGraceMs - (millis() - releaseMs)) / kRepressGraceMs);
-    }
+  } else if (releaseMs && (millis() - releaseMs) < kFadeOutMs && mode != MODE_IDLE) {
+    if (mode == MODE_LOCK) paintLock();
+    else if (mode == MODE_UNLOCK) paintUnlock();
+    else if (mode == MODE_COMBO) paintCombo();
+    tgtBright = (uint8_t)((uint16_t)tgtBright * (kFadeOutMs - (millis() - releaseMs)) / kFadeOutMs);
   } else {
+    if (releaseMs) {
+      releaseMs = 0;
+      mode = MODE_IDLE;
+    }
     paintIdle();
   }
 }
 
 static void fadeStep() {
-  // Smooth — no hard jumps
   curBright = stepToward(curBright, tgtBright, 6);
   for (uint8_t i = 0; i < LED_RING_COUNT; i++) {
     curR[i] = stepToward(curR[i], tgtR[i], 12);
@@ -285,42 +280,10 @@ static void fadeStep() {
   ring.show();
 }
 
-static const __FlashStringHelper* modeName(Mode m) {
-  if (m == MODE_LOCK) return F("LOCK");
-  if (m == MODE_UNLOCK) return F("UNLOCK");
-  if (m == MODE_COMBO) return F("BOTH");
-  return F("IDLE");
-}
-
-static void beginHold(Mode m) {
-  const bool wasHolding = holding;
-  const Mode prev = displayMode;
-  holding = true;
-  displayMode = m;
-  heldMode = m;
-  releaseMs = 0;
-  if (!wasHolding) {
-    Serial.print(F("HOLD "));
-    Serial.println(modeName(m));
-  } else if (prev != m) {
-    Serial.print(F("HOLD switch -> "));
-    Serial.println(modeName(m));
-  }
-}
-
-static void beginRelease(uint32_t now) {
-  if (!holding) return;
-  Serial.print(F("RELEASE "));
-  Serial.print(modeName(heldMode));
-  Serial.println(F(" (solid HIGH)"));
-  holding = false;
-  releaseMs = now;
-}
-
 static void onDistinctTap(Mode btn, uint32_t now) {
   if (btn == MODE_LOCK) {
     unlockStreak = 0;
-    if (lockStreak == 0 || (now - lockStreakStartMs) > kLockGestureWindowMs) {
+    if (lockStreak == 0 || (now - lockStreakStartMs) > kGestureWindowMs) {
       lockStreak = 0;
       lockStreakStartMs = now;
     }
@@ -333,8 +296,7 @@ static void onDistinctTap(Mode btn, uint32_t now) {
       lightsOn = false;
       lockStreak = 0;
       holding = false;
-      heldMode = MODE_IDLE;
-      displayMode = MODE_IDLE;
+      mode = MODE_IDLE;
       confirmTurningOn = false;
       confirmFrames = 24;
       LOG("LIGHTS OFF (3x LOCK)");
@@ -343,7 +305,7 @@ static void onDistinctTap(Mode btn, uint32_t now) {
   }
   if (btn == MODE_UNLOCK) {
     lockStreak = 0;
-    if (unlockStreak == 0 || (now - unlockStreakStartMs) > kUnlockGestureWindowMs) {
+    if (unlockStreak == 0 || (now - unlockStreakStartMs) > kGestureWindowMs) {
       unlockStreak = 0;
       unlockStreakStartMs = now;
     }
@@ -385,16 +347,9 @@ void demoRfRxSetup() {
   lightsOn = true;
   animClock = 0;
 
-  LOG("=== RAW + TEST LOG SESSION ===");
-  LOG("RF + LED show (fade + solid-HIGH release)");
+  LOG("RF raw: short HIGH + hex…hex → long HIGH = release");
   LOG("  Dout->D2  ring->D3");
   LOG("  3x LOCK=OFF  3x UNLOCK=ON");
-  LOG("  release = long HIGH block, then fade");
-#if RF_RAW_LOG
-  LOG("RAW log ON — each frame prints pulse widths (us)");
-  LOG("Do: 1) short-press BOTH  2) hold BOTH ~2s");
-#endif
-  LOG("Ready.");
 }
 
 void demoRfRxLoop() {
@@ -417,7 +372,13 @@ void demoRfRxLoop() {
       noInterrupts();
       releaseSeen = 0;
       interrupts();
-      beginRelease(now);
+      if (holding) {
+        Serial.print(F("RELEASE "));
+        Serial.print(modeName(mode));
+        Serial.println(F(" (long HIGH)"));
+        holding = false;
+        releaseMs = now;
+      }
     }
   }
 
@@ -430,10 +391,7 @@ void demoRfRxLoop() {
     interrupts();
 
 #if RF_RAW_LOG
-    // PulseView-style edge widths (µs). Odd/even alternate levels from first edge.
-    Serial.print(F("RAW ms="));
-    Serial.print(now);
-    Serial.print(F(" n="));
+    Serial.print(F("RAW n="));
     Serial.print(localN);
     Serial.print(F(" us:"));
     for (uint8_t i = 0; i < localN; i++) {
@@ -446,72 +404,40 @@ void demoRfRxLoop() {
     uint32_t code = 0;
     if (localN >= 40 && decodePt2262(local, localN, code)) {
       const Mode btn = modeFromCode(code);
-
-#if RF_RAW_LOG
-      Serial.print(F("DEC 0x"));
-      Serial.print(code, HEX);
-      Serial.print(F(" "));
-      Serial.println(modeName(btn));
-#endif
-
-      if (btn == candidate) {
-        if (stableCount < 255) stableCount++;
-      } else {
-        candidate = btn;
-        stableCount = 1;
-      }
-
-      if (btn != MODE_IDLE && stableCount >= kStableFrames) {
-        const bool wasHolding = holding;
-        if (!wasHolding) {
+      if (btn != MODE_IDLE) {
+        if (!holding) {
           Serial.print(F("CODE 0x"));
           Serial.print(code, HEX);
           Serial.print(F(" "));
           Serial.println(modeName(btn));
           onDistinctTap(btn, now);
+          Serial.print(F("HOLD "));
+          Serial.println(modeName(btn));
+        } else if (mode != btn) {
+          Serial.print(F("HOLD -> "));
+          Serial.println(modeName(btn));
         }
-        beginHold(btn);
-        lastFrameMs = now;
+        holding = true;
+        mode = btn;
         releaseMs = 0;
       }
     }
-#if RF_RAW_LOG
-    else {
-      Serial.println(F("DEC fail"));
-    }
-#endif
   }
 
-  // Stuck HIGH release block (no falling edge yet) — poll while holding
+  // Long HIGH still sitting high (no falling edge yet)
   if (holding) {
     noInterrupts();
     const uint8_t lvl = prevLevel;
     const uint32_t since = (uint32_t)(micros() - lastUs);
     interrupts();
-    if (lvl == 1 && since >= kSolidHighReleaseUs) {
-      releaseSeen = 1;
-    }
+    if (lvl == 1 && since >= kSolidHighReleaseUs) releaseSeen = 1;
   }
 
-  // Backup: no frames for a while (after HIGH block ends / line goes idle)
-  if (holding && lastFrameMs && (now - lastFrameMs) > kReleaseMs) {
-    beginRelease(now);
-  }
-
-  // After grace, fully idle targets
-  if (!holding && releaseMs && (now - releaseMs) > kRepressGraceMs) {
-    displayMode = MODE_IDLE;
-    heldMode = MODE_IDLE;
-    releaseMs = 0;
-    candidate = MODE_IDLE;
-    stableCount = 0;
-  }
-
-  if (lockStreak && (now - lockStreakStartMs) > kLockGestureWindowMs) lockStreak = 0;
-  if (unlockStreak && (now - unlockStreakStartMs) > kUnlockGestureWindowMs) unlockStreak = 0;
+  if (lockStreak && (now - lockStreakStartMs) > kGestureWindowMs) lockStreak = 0;
+  if (unlockStreak && (now - unlockStreakStartMs) > kGestureWindowMs) unlockStreak = 0;
 
   static uint32_t lastFrameDraw = 0;
-  if (!every(20, lastFrameDraw)) return;  // 50 FPS fade
+  if (!every(20, lastFrameDraw)) return;
 
   updateTargets();
   fadeStep();

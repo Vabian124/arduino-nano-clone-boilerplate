@@ -9,8 +9,8 @@
 
 #define SERIAL_BAUD 115200
 
-// Dump every RF pulse train (µs widths) to Serial → save under pulseview/log/
-#define RF_RAW_LOG 1
+// Dump every RF pulse train (µs widths) to Serial → pulseview/log/
+#define RF_RAW_LOG 0
 
 // ---- Demos (1 = on, 0 = off) ----
 #define DEMO_DIGITAL_OUT   0  // blink Pins::LED (D13)
