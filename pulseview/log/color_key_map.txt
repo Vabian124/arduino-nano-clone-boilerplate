@@ -1,9 +1,12 @@
 Remote color → key nibble (OR together when held)
 
-  RED    top     bit0  0x1
-  BLUE   right   bit1  0x2   (was LOCK)
-  YELLOW left    bit2  0x4   (was UNLOCK)
-  GREEN  bottom  bit3  0x8   (was BTN8)
+  RED    top     bit0  0x1   → ring quarter LEDs 0..5
+  BLUE   right   bit1  0x2   → ring quarter LEDs 6..11
+  YELLOW left    bit2  0x4   → ring quarter LEDs 18..23
+  GREEN  bottom  bit3  0x8   → ring quarter LEDs 12..17
+
+UI: active quarters pulse; idle = dim compass ticks + sweeping hand.
+Gestures: short tap only (≤650ms), sticky release 280ms; BLUE×3 off, YELLOW×3 on.
 
 Singles:
   0x1 RED
