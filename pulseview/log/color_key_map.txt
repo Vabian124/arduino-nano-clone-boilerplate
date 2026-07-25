@@ -1,34 +1,22 @@
 Remote color → key nibble (OR together when held)
 
-  RED    top     bit0  0x1   → ring quarter LEDs 0..5
-  BLUE   right   bit1  0x2   → ring quarter LEDs 6..11
-  YELLOW left    bit2  0x4   → ring quarter LEDs 18..23
-  GREEN  bottom  bit3  0x8   → ring quarter LEDs 12..17
+  RED    bit0  0x1
+  BLUE   bit1  0x2
+  YELLOW bit2  0x4
+  GREEN  bit3  0x8
 
-UI: active quarters pulse; idle = dim compass ticks + sweeping hand.
-Gestures: short tap only (≤650ms), sticky release 280ms; BLUE×3 off, YELLOW×3 on.
+Ring quarter starts (24 LEDs), after +180° then left 45° (index +9):
+  RED    LED 9
+  BLUE   LED 15
+  GREEN  LED 21
+  YELLOW LED 3
+  (each quarter is 6 LEDs, wrapping)
 
-Singles:
-  0x1 RED
-  0x2 BLUE
-  0x4 YELLOW
-  0x8 GREEN
+UI:
+  - Hold: only active colors (no ghost quarters)
+  - Key mask needs 3 matching frames before UI changes (stops RED+BLUE glitch → YELLOW)
+  - Tap length excludes reconnect grace (fixes YELLOW x3 unlock)
+  - Unlock/lock taps: single spaced lamps 1/2/3 in that quarter
+  - Press ack: one bright LED on press
 
-Pairs:
-  0x3 RED+BLUE
-  0x5 RED+YELLOW
-  0x6 BLUE+YELLOW          (was BOTH)
-  0x9 RED+GREEN            (was BTN1+8)
-  0xA BLUE+GREEN
-  0xC YELLOW+GREEN
-
-Triples:
-  0x7 RED+BLUE+YELLOW
-  0xB RED+BLUE+GREEN
-  0xD RED+YELLOW+GREEN
-  0xE BLUE+YELLOW+GREEN
-
-All:
-  0xF RED+BLUE+YELLOW+GREEN
-
-Base code family: 0xA4535x
+Gestures: short tap BLUE×3 = OFF, YELLOW×3 = ON (8s window)

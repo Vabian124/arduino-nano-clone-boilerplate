@@ -11,22 +11,21 @@
  * Remote Dout → D2, LED ring DIN → D3
  *
  * Keys (nibble bits OR together):
- *   0x1 RED top | 0x2 BLUE right | 0x4 YELLOW left | 0x8 GREEN bottom
+ *   0x1 RED | 0x2 BLUE | 0x4 YELLOW | 0x8 GREEN
  *
- * Ring UI: each color owns a quarter (6 LEDs). Combos light multiple quarters.
- * Idle: soft clock (second hand + dim quarter ticks).
+ * Ring quarters rotated +180° then left 45° from the original map
+ * (LED index offset +9 on a 24-LED ring).
  *
- * Hold stickiness: after long-HIGH, wait reconnect grace before committing
- * release (RF drop/reconnect won't fake a new press).
+ * Hold: only stably decoded key masks update the UI (kills RED+BLUE→YELLOW glitches).
+ * Release: long HIGH arms pending; commit after grace. Tap length excludes grace time.
  *
- * Gestures (short taps only, counted on committed release):
- *   BLUE ×3 → lights OFF
- *   YELLOW ×3 → lights ON
+ * Gestures (short taps on committed release):
+ *   BLUE ×3 → OFF   YELLOW ×3 → ON
  */
 
 static constexpr uint8_t kMax = 120;
 static constexpr unsigned int kGapUs = 5000;
-static constexpr unsigned int kSolidHighReleaseUs = 10000;
+static constexpr unsigned int kSolidHighReleaseUs = 12000;
 
 static constexpr uint8_t kKeyRed = 0x1;
 static constexpr uint8_t kKeyBlue = 0x2;
@@ -34,18 +33,20 @@ static constexpr uint8_t kKeyYellow = 0x4;
 static constexpr uint8_t kKeyGreen = 0x8;
 
 static constexpr uint8_t kGestureNeed = 3;
-static constexpr uint32_t kGestureWindowMs = 7000;
-static constexpr uint32_t kMinTapMs = 50;
-static constexpr uint32_t kMaxTapMs = 650;       // longer = hold, not a tap
-static constexpr uint32_t kReconnectGraceMs = 280; // ignore brief RF gaps
-static constexpr uint32_t kFadeOutMs = 450;
-static constexpr uint32_t kGestureHintMs = 1600;
+static constexpr uint32_t kGestureWindowMs = 8000;
+static constexpr uint32_t kMinTapMs = 40;
+static constexpr uint32_t kMaxTapMs = 900;        // wall-clock press time (excludes grace)
+static constexpr uint32_t kReconnectGraceMs = 320;
+static constexpr uint32_t kFadeOutMs = 400;
+static constexpr uint32_t kGestureHintMs = 2200;
+static constexpr uint8_t kKeyStableNeed = 3;      // frames before heldKeys may change
 
-// Quarters on 24-LED ring (rotate hardware if a color feels shifted)
-static constexpr uint8_t kQTop = 0;     // RED    LEDs 0..5
-static constexpr uint8_t kQRight = 6;   // BLUE   6..11
-static constexpr uint8_t kQBottom = 12; // GREEN  12..17
-static constexpr uint8_t kQLeft = 18;   // YELLOW 18..23
+// Original quarters were 0/6/12/18. Offset = 180°(12) then left 45°(-3) → +9.
+static constexpr uint8_t kRingRot = 9;
+static constexpr uint8_t kQRed = (0 + kRingRot) % LED_RING_COUNT;      // was top
+static constexpr uint8_t kQBlue = (6 + kRingRot) % LED_RING_COUNT;     // was right
+static constexpr uint8_t kQGreen = (12 + kRingRot) % LED_RING_COUNT;   // was bottom
+static constexpr uint8_t kQYellow = (18 + kRingRot) % LED_RING_COUNT;  // was left
 static constexpr uint8_t kQLen = 6;
 
 static Adafruit_NeoPixel ring(LED_RING_COUNT, Pins::LED_RING, NEO_GRB + NEO_KHZ800);
@@ -63,20 +64,25 @@ static unsigned int local[kMax];
 static uint8_t localN = 0;
 
 static uint8_t heldKeys = 0;
+static uint8_t candidateKeys = 0;
+static uint8_t keyStable = 0;
 static bool holding = false;
 static bool pendingRelease = false;
 static uint32_t pendingReleaseMs = 0;
 static uint32_t pressStartMs = 0;
 static bool lightsOn = true;
 static uint32_t releaseMs = 0;
+static uint32_t lastKeyFrameMs = 0;
 
 static uint8_t blueStreak = 0;
 static uint8_t yellowStreak = 0;
 static uint32_t blueStreakStartMs = 0;
 static uint32_t yellowStreakStartMs = 0;
-static uint8_t gestureHintKey = 0;   // which single-key streak to show
+static uint8_t gestureHintKey = 0;
 static uint8_t gestureHintCount = 0;
 static uint32_t gestureHintUntil = 0;
+static uint8_t pressAckKey = 0;          // single bright LED on press
+static uint32_t pressAckUntil = 0;
 
 static uint8_t curR[LED_RING_COUNT];
 static uint8_t curG[LED_RING_COUNT];
@@ -198,14 +204,14 @@ static void clearTargets() {
 }
 
 static void setTargetPixel(uint8_t i, uint8_t r, uint8_t g, uint8_t b) {
-  i %= LED_RING_COUNT;
+  i = (uint8_t)(i % LED_RING_COUNT);
   tgtR[i] = r;
   tgtG[i] = g;
   tgtB[i] = b;
 }
 
 static void addTargetPixel(uint8_t i, uint8_t r, uint8_t g, uint8_t b) {
-  i %= LED_RING_COUNT;
+  i = (uint8_t)(i % LED_RING_COUNT);
   uint16_t nr = (uint16_t)tgtR[i] + r;
   uint16_t ng = (uint16_t)tgtG[i] + g;
   uint16_t nb = (uint16_t)tgtB[i] + b;
@@ -235,15 +241,15 @@ static void colorForKey(uint8_t bit, uint8_t& r, uint8_t& g, uint8_t& b) {
 }
 
 static uint8_t quarterStartForKey(uint8_t bit) {
-  if (bit == kKeyRed) return kQTop;
-  if (bit == kKeyBlue) return kQRight;
-  if (bit == kKeyYellow) return kQLeft;
-  return kQBottom;
+  if (bit == kKeyRed) return kQRed;
+  if (bit == kKeyBlue) return kQBlue;
+  if (bit == kKeyYellow) return kQYellow;
+  return kQGreen;
 }
 
 static void paintQuarter(uint8_t start, uint8_t r, uint8_t g, uint8_t b, uint8_t level) {
   for (uint8_t i = 0; i < kQLen; i++) {
-    setTargetPixel(start + i,
+    setTargetPixel((uint8_t)(start + i),
                    (uint8_t)((uint16_t)r * level / 255),
                    (uint8_t)((uint16_t)g * level / 255),
                    (uint8_t)((uint16_t)b * level / 255));
@@ -251,16 +257,15 @@ static void paintQuarter(uint8_t start, uint8_t r, uint8_t g, uint8_t b, uint8_t
 }
 
 static void paintQuarterPulse(uint8_t start, uint8_t r, uint8_t g, uint8_t b) {
-  // Breathing fill + brighter traveling edge (GUI “active segment”)
   const uint16_t t = (uint16_t)(animClock % 1000);
-  const uint8_t breath = (t < 500) ? (uint8_t)(140 + t / 5) : (uint8_t)(140 + (1000 - t) / 5);
+  const uint8_t breath = (t < 500) ? (uint8_t)(150 + t / 5) : (uint8_t)(150 + (1000 - t) / 5);
   const uint8_t edge = (uint8_t)((animClock / 45) % kQLen);
   for (uint8_t i = 0; i < kQLen; i++) {
     uint8_t lvl = breath;
     const uint8_t d = (uint8_t)((i + kQLen - edge) % kQLen);
     if (d == 0) lvl = 255;
-    else if (d == 1) lvl = 220;
-    setTargetPixel(start + i,
+    else if (d == 1) lvl = 230;
+    setTargetPixel((uint8_t)(start + i),
                    (uint8_t)((uint16_t)r * lvl / 255),
                    (uint8_t)((uint16_t)g * lvl / 255),
                    (uint8_t)((uint16_t)b * lvl / 255));
@@ -268,72 +273,54 @@ static void paintQuarterPulse(uint8_t start, uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static void paintIdleClock() {
-  tgtBright = 48;
+  tgtBright = 42;
   clearTargets();
-  // Dim quarter ticks (muted brand colors) — compass / GUI chrome
   uint8_t r, g, b;
+  // Tiny corner ticks only (2 LEDs) — not full ghost quarters
   colorForKey(kKeyRed, r, g, b);
-  paintQuarter(kQTop, r, g, b, 28);
+  setTargetPixel(kQRed + 2, r / 8, g / 8, b / 8);
+  setTargetPixel(kQRed + 3, r / 8, g / 8, b / 8);
   colorForKey(kKeyBlue, r, g, b);
-  paintQuarter(kQRight, r, g, b, 28);
+  setTargetPixel(kQBlue + 2, r / 8, g / 8, b / 8);
+  setTargetPixel(kQBlue + 3, r / 8, g / 8, b / 8);
   colorForKey(kKeyGreen, r, g, b);
-  paintQuarter(kQBottom, r, g, b, 28);
+  setTargetPixel(kQGreen + 2, r / 8, g / 8, b / 8);
+  setTargetPixel(kQGreen + 3, r / 8, g / 8, b / 8);
   colorForKey(kKeyYellow, r, g, b);
-  paintQuarter(kQLeft, r, g, b, 28);
+  setTargetPixel(kQYellow + 2, r / 8, g / 8, b / 8);
+  setTargetPixel(kQYellow + 3, r / 8, g / 8, b / 8);
 
-  // Second hand — one bright tip + short trail (time cue)
-  const uint8_t hand = (uint8_t)((animClock / 1000) % LED_RING_COUNT); // ~1 step / s feel if slowed; use faster for life
   const uint8_t handFast = (uint8_t)((animClock / 80) % LED_RING_COUNT);
   for (uint8_t t = 0; t < 4; t++) {
-    const uint8_t i = (handFast + LED_RING_COUNT - t) % LED_RING_COUNT;
+    const uint8_t i = (uint8_t)((handFast + LED_RING_COUNT - t) % LED_RING_COUNT);
     const uint8_t v = (uint8_t)(200 - t * 50);
     addTargetPixel(i, v, v, v);
   }
-  (void)hand;
 }
 
 static void paintHoldQuarters(uint8_t keys) {
   tgtBright = LED_RING_BRIGHTNESS;
   clearTargets();
-
-  // Inactive quarters: faint ghost so the “GUI” layout stays readable
   uint8_t r, g, b;
-  if (!(keys & kKeyRed)) {
-    colorForKey(kKeyRed, r, g, b);
-    paintQuarter(kQTop, r, g, b, 14);
-  }
-  if (!(keys & kKeyBlue)) {
-    colorForKey(kKeyBlue, r, g, b);
-    paintQuarter(kQRight, r, g, b, 14);
-  }
-  if (!(keys & kKeyGreen)) {
-    colorForKey(kKeyGreen, r, g, b);
-    paintQuarter(kQBottom, r, g, b, 14);
-  }
-  if (!(keys & kKeyYellow)) {
-    colorForKey(kKeyYellow, r, g, b);
-    paintQuarter(kQLeft, r, g, b, 14);
-  }
 
-  // Active quarters: full color pulse
+  // Only ACTIVE colors — no ghost quarters (ghost yellow looked "pressed")
   if (keys & kKeyRed) {
     colorForKey(kKeyRed, r, g, b);
-    paintQuarterPulse(kQTop, r, g, b);
+    paintQuarterPulse(kQRed, r, g, b);
   }
   if (keys & kKeyBlue) {
     colorForKey(kKeyBlue, r, g, b);
-    paintQuarterPulse(kQRight, r, g, b);
+    paintQuarterPulse(kQBlue, r, g, b);
   }
   if (keys & kKeyYellow) {
     colorForKey(kKeyYellow, r, g, b);
-    paintQuarterPulse(kQLeft, r, g, b);
+    paintQuarterPulse(kQYellow, r, g, b);
   }
   if (keys & kKeyGreen) {
     colorForKey(kKeyGreen, r, g, b);
-    paintQuarterPulse(kQBottom, r, g, b);
+    paintQuarterPulse(kQGreen, r, g, b);
   }
 
-  // Combo spark: white tick rotating only when 2+ keys held
   uint8_t n = 0;
   if (keys & kKeyRed) n++;
   if (keys & kKeyBlue) n++;
@@ -341,22 +328,31 @@ static void paintHoldQuarters(uint8_t keys) {
   if (keys & kKeyGreen) n++;
   if (n >= 2) {
     const uint8_t sp = (uint8_t)((animClock / 40) % LED_RING_COUNT);
-    addTargetPixel(sp, 180, 180, 180);
-    addTargetPixel((sp + LED_RING_COUNT - 1) % LED_RING_COUNT, 80, 80, 80);
+    addTargetPixel(sp, 160, 160, 160);
   }
 }
 
+// One LED per tap in the gesture quarter (clear 1 / 2 / 3 feedback)
 static void paintGestureHint() {
   if (!gestureHintKey || animClock > gestureHintUntil) return;
   uint8_t r, g, b;
   colorForKey(gestureHintKey, r, g, b);
   const uint8_t start = quarterStartForKey(gestureHintKey);
-  // 1..3 bright pips in that quarter = tap progress
-  const uint8_t pips = gestureHintCount > kQLen ? kQLen : gestureHintCount;
+  const uint8_t pips = gestureHintCount > 3 ? 3 : gestureHintCount;
   for (uint8_t i = 0; i < pips; i++) {
-    const uint8_t idx = start + 1 + i; // skip edge, fill inward
-    setTargetPixel(idx, r, g, b);
+    // Spaced single lamps: LED 1, 3, 5 in the quarter
+    setTargetPixel((uint8_t)(start + 1 + i * 2), r, g, b);
   }
+}
+
+static void paintPressAck() {
+  if (!pressAckKey || animClock > pressAckUntil) return;
+  uint8_t r, g, b;
+  colorForKey(pressAckKey, r, g, b);
+  const uint8_t start = quarterStartForKey(pressAckKey);
+  // Single bright center LED of that quarter
+  setTargetPixel((uint8_t)(start + 2), r, g, b);
+  setTargetPixel((uint8_t)(start + 3), r / 3, g / 3, b / 3);
 }
 
 static void paintOff() {
@@ -365,13 +361,12 @@ static void paintOff() {
 }
 
 static void paintSoftConfirm(bool turningOn) {
-  tgtBright = 70;
-  // Wipe from top clockwise
+  tgtBright = 75;
   const uint8_t filled = (uint8_t)((24 - confirmFrames) * LED_RING_COUNT / 24);
   clearTargets();
   for (uint8_t i = 0; i < filled && i < LED_RING_COUNT; i++) {
-    if (turningOn) setTargetPixel(i, 20, 200, 80);
-    else setTargetPixel(i, 200, 30, 30);
+    if (turningOn) setTargetPixel(i, 30, 220, 90);
+    else setTargetPixel(i, 220, 35, 35);
   }
 }
 
@@ -382,22 +377,25 @@ static void updateTargets() {
     if (confirmFrames == 0 && !confirmTurningOn) paintOff();
     return;
   }
+
   if (!lightsOn) {
     paintOff();
-    // Still show gesture hints while off (so 3x yellow progress is visible)
-    if (gestureHintKey && animClock <= gestureHintUntil) {
-      tgtBright = 50;
-      paintGestureHint();
-    }
+    tgtBright = 55;
+    // Unlock-from-off: must see yellow tap lamps clearly
+    paintGestureHint();
+    paintPressAck();
+    if (!gestureHintKey && !pressAckKey) tgtBright = 0;
     return;
   }
 
   const bool showHold = (holding || pendingRelease) && heldKeys;
   if (showHold) {
     paintHoldQuarters(heldKeys);
+    paintPressAck();  // ack peeks on top of quarter
   } else if (releaseMs && (animClock - releaseMs) < kFadeOutMs && heldKeys) {
     paintHoldQuarters(heldKeys);
     tgtBright = (uint8_t)((uint16_t)tgtBright * (kFadeOutMs - (animClock - releaseMs)) / kFadeOutMs);
+    paintGestureHint();
   } else {
     if (releaseMs) {
       releaseMs = 0;
@@ -405,15 +403,16 @@ static void updateTargets() {
     }
     paintIdleClock();
     paintGestureHint();
+    paintPressAck();
   }
 }
 
 static void fadeStep() {
-  curBright = stepToward(curBright, tgtBright, 8);
+  curBright = stepToward(curBright, tgtBright, 10);
   for (uint8_t i = 0; i < LED_RING_COUNT; i++) {
-    curR[i] = stepToward(curR[i], tgtR[i], 18);
-    curG[i] = stepToward(curG[i], tgtG[i], 18);
-    curB[i] = stepToward(curB[i], tgtB[i], 18);
+    curR[i] = stepToward(curR[i], tgtR[i], 22);
+    curG[i] = stepToward(curG[i], tgtG[i], 22);
+    curB[i] = stepToward(curB[i], tgtB[i], 22);
     ring.setPixelColor(i, ring.Color(curR[i], curG[i], curB[i]));
   }
   ring.setBrightness(curBright);
@@ -426,8 +425,15 @@ static void setGestureHint(uint8_t key, uint8_t count, uint32_t now) {
   gestureHintUntil = now + kGestureHintMs;
 }
 
+static void setPressAck(uint8_t key, uint32_t now) {
+  // Single-key presses get an immediate one-lamp flash
+  if (key != kKeyRed && key != kKeyBlue && key != kKeyYellow && key != kKeyGreen) return;
+  // only pure singles
+  pressAckKey = key;
+  pressAckUntil = now + 350;
+}
+
 static void onCommittedTap(uint8_t keys, uint32_t now) {
-  // Only pure single-key short taps count
   if (keys != kKeyBlue && keys != kKeyYellow) {
     blueStreak = 0;
     yellowStreak = 0;
@@ -460,7 +466,6 @@ static void onCommittedTap(uint8_t keys, uint32_t now) {
     return;
   }
 
-  // yellow
   blueStreak = 0;
   if (yellowStreak == 0 || (now - yellowStreakStartMs) > kGestureWindowMs) {
     yellowStreak = 0;
@@ -468,6 +473,7 @@ static void onCommittedTap(uint8_t keys, uint32_t now) {
   }
   yellowStreak++;
   setGestureHint(kKeyYellow, yellowStreak, now);
+  setPressAck(kKeyYellow, now);  // extra unlock feedback lamp
   Serial.print(F("TAP YELLOW "));
   Serial.print(yellowStreak);
   Serial.print('/');
@@ -476,14 +482,15 @@ static void onCommittedTap(uint8_t keys, uint32_t now) {
     lightsOn = true;
     yellowStreak = 0;
     confirmTurningOn = true;
-    confirmFrames = 24;
+    confirmFrames = 28;
     gestureHintKey = 0;
     LOG("LIGHTS ON (3x YELLOW tap)");
   }
 }
 
 static void commitRelease(uint32_t now) {
-  const uint32_t heldFor = now - pressStartMs;
+  // Use time until release was *signaled*, not including reconnect grace
+  const uint32_t heldFor = (pendingReleaseMs > pressStartMs) ? (pendingReleaseMs - pressStartMs) : 0;
   const uint8_t keys = heldKeys;
   Serial.print(F("RELEASE "));
   printKeys(keys);
@@ -494,31 +501,36 @@ static void commitRelease(uint32_t now) {
   holding = false;
   pendingRelease = false;
   releaseMs = now;
+  candidateKeys = 0;
+  keyStable = 0;
 
   if (keys && heldFor >= kMinTapMs && heldFor <= kMaxTapMs) {
     onCommittedTap(keys, now);
   }
 }
 
-static void beginOrContinueHold(uint8_t keys, uint32_t now) {
+static void applyStableKeys(uint8_t keys, uint32_t now) {
+  lastKeyFrameMs = now;
+
+  if (keys == candidateKeys) {
+    if (keyStable < 255) keyStable++;
+  } else {
+    candidateKeys = keys;
+    keyStable = 1;
+  }
+
+  // First lock-in: accept after 1–2 frames so UI feels snappy
+  const uint8_t need = holding ? kKeyStableNeed : 2;
+  if (keyStable < need) return;
+
   if (pendingRelease) {
-    // RF came back within grace — stick the hold
-    pendingRelease = false;
-    if (keys != heldKeys) {
-      Serial.print(F("HOLD -> "));
-      printKeys(keys);
-      Serial.println();
-      heldKeys = keys;
-    }
-    return;
+    pendingRelease = false;  // keys returned within grace
   }
 
   if (!holding) {
-    // Fresh press (or repress after grace already committed)
     if (releaseMs && (now - releaseMs) < kReconnectGraceMs && keys == heldKeys) {
-      // Same keys bounced back right after a committed release — treat as hold again, not a new tap cycle start for gestures already counted
       holding = true;
-      pressStartMs = now; // new segment; won't double-count previous tap
+      pressStartMs = now;
       releaseMs = 0;
       Serial.print(F("REHOLD "));
       printKeys(keys);
@@ -529,10 +541,16 @@ static void beginOrContinueHold(uint8_t keys, uint32_t now) {
     pressStartMs = now;
     heldKeys = keys;
     releaseMs = 0;
+    if (keys == kKeyRed || keys == kKeyBlue || keys == kKeyYellow || keys == kKeyGreen) {
+      setPressAck(keys, now);
+    }
     Serial.print(F("HOLD "));
     printKeys(keys);
     Serial.println();
-  } else if (heldKeys != keys) {
+    return;
+  }
+
+  if (heldKeys != keys) {
     heldKeys = keys;
     Serial.print(F("HOLD -> "));
     printKeys(keys);
@@ -560,10 +578,9 @@ void demoRfRxSetup() {
   lightsOn = true;
   animClock = 0;
 
-  LOG("RF UI: quarters RED/BLUE/YELLOW/GREEN + clock idle");
+  LOG("RF UI: quarters +180 then left 45 (rot+9)");
   LOG("  Dout->D2  ring->D3");
-  LOG("  short tap x3 BLUE=OFF  YELLOW=ON (7s window)");
-  LOG("  hold sticky 280ms (RF drop tolerant)");
+  LOG("  tap x3 BLUE=OFF  YELLOW=ON (stable keys, sticky release)");
 }
 
 void demoRfRxLoop() {
@@ -606,13 +623,13 @@ void demoRfRxLoop() {
       const uint8_t keys = (uint8_t)(code & 0x0FUL);
       if (keys != 0) {
         logSee(code, keys, now);
-        beginOrContinueHold(keys, now);
+        applyStableKeys(keys, now);
       }
     }
   }
 
-  // Stuck HIGH while still “holding”
-  if (holding && !pendingRelease) {
+  // Arm pending release on stuck HIGH, but only if no key frames recently
+  if (holding && !pendingRelease && lastKeyFrameMs && (now - lastKeyFrameMs) > 60) {
     noInterrupts();
     const uint8_t lvl = prevLevel;
     const uint32_t since = (uint32_t)(micros() - lastUs);
@@ -623,14 +640,16 @@ void demoRfRxLoop() {
     }
   }
 
-  // Commit release only after reconnect grace with no keys returning
+  // Also: if no frames at all for a while after pending, still commit via grace
   if (pendingRelease && (now - pendingReleaseMs) >= kReconnectGraceMs) {
+    // If a frame arrived and cleared pending, we won't be here
     commitRelease(now);
   }
 
   if (blueStreak && (now - blueStreakStartMs) > kGestureWindowMs) blueStreak = 0;
   if (yellowStreak && (now - yellowStreakStartMs) > kGestureWindowMs) yellowStreak = 0;
   if (gestureHintKey && now > gestureHintUntil) gestureHintKey = 0;
+  if (pressAckKey && now > pressAckUntil) pressAckKey = 0;
 
   static uint32_t lastFrameDraw = 0;
   if (!every(20, lastFrameDraw)) return;
