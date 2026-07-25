@@ -1,0 +1,21 @@
+Capture: both_short_hold_raw.txt
+Wiring: remote Dout -> Nano D2, ring DIN -> D3, 115200 baud
+User sequence: 3x  3x  2s  2s  1x  3s
+  (intended: lock×3, unlock×3, hold~2s, hold~2s, short×1, hold~3s)
+
+Stats from this file:
+  RAW frames (pulse lists): 172
+  DEC lines: 31
+  File: pulseview/log/both_short_hold_raw.txt
+
+What the event layer saw:
+  - LOCK taps: gesture 1/3 and 2/3 (no LIGHTS OFF / 3/3 in this file)
+  - UNLOCK taps: gesture 1/3 and 2/3 (no LIGHTS ON / 3/3)
+  - BOTH: several CODE/HOLD BOTH bursts (0xA45356 / 0xA4D356)
+  - HOLD durations in the event log were short (~0.1–0.2 s) with
+    RELEASE (solid HIGH) between them — raw pulse trains still logged
+
+RAW line format:
+  RAW ms=<millis> n=<edge count> us: <d0> <d1> ...
+  First ~11 ms value is usually the inter-frame sync gap.
+  DEC 0x...... LOCK|UNLOCK|BOTH|IDLE  (or DEC fail)

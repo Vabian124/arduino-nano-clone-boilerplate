@@ -385,12 +385,16 @@ void demoRfRxSetup() {
   lightsOn = true;
   animClock = 0;
 
-  LOG("=== TEST LOG SESSION ===");
+  LOG("=== RAW + TEST LOG SESSION ===");
   LOG("RF + LED show (fade + solid-HIGH release)");
   LOG("  Dout->D2  ring->D3");
   LOG("  3x LOCK=OFF  3x UNLOCK=ON");
   LOG("  release = long HIGH block, then fade");
-  LOG("Ready — do the checklist steps.");
+#if RF_RAW_LOG
+  LOG("RAW log ON — each frame prints pulse widths (us)");
+  LOG("Do: 1) short-press BOTH  2) hold BOTH ~2s");
+#endif
+  LOG("Ready.");
 }
 
 void demoRfRxLoop() {
@@ -425,9 +429,30 @@ void demoRfRxLoop() {
     readyCount = 0;
     interrupts();
 
+#if RF_RAW_LOG
+    // PulseView-style edge widths (µs). Odd/even alternate levels from first edge.
+    Serial.print(F("RAW ms="));
+    Serial.print(now);
+    Serial.print(F(" n="));
+    Serial.print(localN);
+    Serial.print(F(" us:"));
+    for (uint8_t i = 0; i < localN; i++) {
+      Serial.print(' ');
+      Serial.print(local[i]);
+    }
+    Serial.println();
+#endif
+
     uint32_t code = 0;
     if (localN >= 40 && decodePt2262(local, localN, code)) {
       const Mode btn = modeFromCode(code);
+
+#if RF_RAW_LOG
+      Serial.print(F("DEC 0x"));
+      Serial.print(code, HEX);
+      Serial.print(F(" "));
+      Serial.println(modeName(btn));
+#endif
 
       if (btn == candidate) {
         if (stableCount < 255) stableCount++;
@@ -450,6 +475,11 @@ void demoRfRxLoop() {
         releaseMs = 0;
       }
     }
+#if RF_RAW_LOG
+    else {
+      Serial.println(F("DEC fail"));
+    }
+#endif
   }
 
   // Stuck HIGH release block (no falling edge yet) — poll while holding
