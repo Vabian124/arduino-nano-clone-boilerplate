@@ -49,3 +49,13 @@ void demoI2cScanLoop();
 void demoSpiLoopbackSetup();
 void demoSpiLoopbackLoop();
 #endif
+
+#if DEMO_LED_RING
+void demoLedRingSetup();
+void demoLedRingLoop();
+#endif
+
+#if DEMO_RF_RX
+void demoRfRxSetup();
+void demoRfRxLoop();
+#endif

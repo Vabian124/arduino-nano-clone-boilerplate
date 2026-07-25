@@ -1,0 +1,10 @@
+Logic Analyzer	Microcontroller Pin	Why?
+GND	Pin 8 (VSS)	Mandatory. This connects the grounds so both devices agree on what "zero volts" is.
+1	Pin 5 (PA0)	I/O snooping
+2	Pin 3 (PA1)	I/O snooping
+3	Pin 2 (PA2)	I/O snooping
+4	Pin 4 (PA3)	I/O snooping
+5	Pin 7 (PA4)	I/O snooping
+6	Pin 6 (PA5)	I/O snooping
+7 & 8	Leave empty	We only have 6 signal pins to watch!
+CLK	Leave empty	We don't need this. It is used for "synchronous" sampling where an external device dictates the timing. Your analyzer will use its own internal clock.

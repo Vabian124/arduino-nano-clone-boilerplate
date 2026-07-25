@@ -30,6 +30,12 @@ void demosPrintWiring() {
 #if DEMO_SPI_LOOPBACK
   LOG("  SPI_LOOPBACK jumper D11(MOSI) <-> D12(MISO)");
 #endif
+#if DEMO_LED_RING
+  LOG("  LED_RING     WCMCU-2812B-24: 5V IN + GND, DIN -> D2 (DOUT unused)");
+#endif
+#if DEMO_RF_RX
+  LOG("  RF_RX+LIGHT  remote Dout->D3, LED ring DIN->D4, 5V+GND");
+#endif
 }
 
 void demosSetup() {
@@ -60,6 +66,12 @@ void demosSetup() {
 #if DEMO_SPI_LOOPBACK
   demoSpiLoopbackSetup();
 #endif
+#if DEMO_LED_RING
+  demoLedRingSetup();
+#endif
+#if DEMO_RF_RX
+  demoRfRxSetup();
+#endif
 }
 
 void demosLoop() {
@@ -89,5 +101,11 @@ void demosLoop() {
 #endif
 #if DEMO_SPI_LOOPBACK
   demoSpiLoopbackLoop();
+#endif
+#if DEMO_LED_RING
+  demoLedRingLoop();
+#endif
+#if DEMO_RF_RX
+  demoRfRxLoop();
 #endif
 }

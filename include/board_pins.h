@@ -55,6 +55,9 @@ namespace Pins {
   constexpr uint8_t DIG_IN  = 7;   // button → GND with INPUT_PULLUP
   constexpr uint8_t TONE_PIN = 8;  // piezo / buzzer (+)
 
+  // WS2812B / NeoPixel data (WCMCU-2812B-24 ring DIN)
+  constexpr uint8_t LED_RING = 4;  // D4
+
   // SPI
   constexpr uint8_t SPI_SS   = 10;
   constexpr uint8_t SPI_MOSI = 11;
@@ -66,6 +69,8 @@ namespace Pins {
 
   // Analog
   constexpr uint8_t ADC_POT   = A0;  // pot / sensor 0–5V
+  // RCSwitch needs INT0/INT1 → use D3 (INT1). Do not use A0/A3.
+  constexpr uint8_t RF_DATA   = 3;
   constexpr uint8_t ADC_EXTRA = A1;
   constexpr uint8_t I2C_SDA   = A4;
   constexpr uint8_t I2C_SCL   = A5;
