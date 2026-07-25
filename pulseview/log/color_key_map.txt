@@ -1,0 +1,31 @@
+Remote color → key nibble (OR together when held)
+
+  RED    top     bit0  0x1
+  BLUE   right   bit1  0x2   (was LOCK)
+  YELLOW left    bit2  0x4   (was UNLOCK)
+  GREEN  bottom  bit3  0x8   (was BTN8)
+
+Singles:
+  0x1 RED
+  0x2 BLUE
+  0x4 YELLOW
+  0x8 GREEN
+
+Pairs:
+  0x3 RED+BLUE
+  0x5 RED+YELLOW
+  0x6 BLUE+YELLOW          (was BOTH)
+  0x9 RED+GREEN            (was BTN1+8)
+  0xA BLUE+GREEN
+  0xC YELLOW+GREEN
+
+Triples:
+  0x7 RED+BLUE+YELLOW
+  0xB RED+BLUE+GREEN
+  0xD RED+YELLOW+GREEN
+  0xE BLUE+YELLOW+GREEN
+
+All:
+  0xF RED+BLUE+YELLOW+GREEN
+
+Base code family: 0xA4535x
